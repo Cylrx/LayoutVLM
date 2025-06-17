@@ -54,6 +54,7 @@ python main.py --scene_json_file path/to/scene.json --openai_api_key your_api_ke
 The script will generate a layout.json file in the specified save directory containing the optimized positions and orientations of all assets in the scene.
 
 ## BibTeX
+```bibtex
 @inproceedings{sun2025layoutvlm,
   title={Layoutvlm: Differentiable optimization of 3d layout via vision-language models},
   author={Sun, Fan-Yun and Liu, Weiyu and Gu, Siyi and Lim, Dylan and Bhat, Goutam and Tombari, Federico and Li, Manling and Haber, Nick and Wu, Jiajun},
@@ -61,3 +62,4 @@ The script will generate a layout.json file in the specified save directory cont
   pages={29469--29478},
   year={2025}
 }
+```
