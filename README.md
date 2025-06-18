@@ -1,4 +1,7 @@
 # LayoutVLM
+<h2 align="center">
+    Differentiable Optimization of 3D Layout via Vision-Language Models<br>
+</h2>
 
 <div align="left">
     <a href="https://ai.stanford.edu/~sunfanyun/layoutvlm"><img src="https://img.shields.io/badge/🌐 Website-Visit-orange"></a>
