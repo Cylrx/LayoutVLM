@@ -10,14 +10,21 @@
 ## Installation
 
 1. Clone this repository
-2. Install dependencies:
+2. Install dependencies (python 3.10):
 ```bash
 pip install -r requirements.txt
 ```
-3. Install Rotated IOU Loss: https://github.com/lilanxiao/Rotated_IoU
+3. Install Rotated IOU Loss (https://github.com/lilanxiao/Rotated\_IoU)
+```
+cd third_party/Rotated_IoU/cuda_op
+python setup.py install
+````
 
 ## Data preprocessing
-Refer to https://github.com/allenai/Holodeck and https://github.com/allenai/objathor
+1. Download the dataset https://drive.google.com/file/d/1WGbj8gWn-f-BRwqPKfoY06budBzgM0pu/view?usp=sharing
+2. Unzip it.
+
+Refer to https://github.com/allenai/Holodeck and https://github.com/allenai/objathor for how we preprocess Objaverse assets.
 
 ## Usage
 

@@ -15,58 +15,9 @@ from .scene import AssetInstance, Wall
 from .constraints import bbox_overlap_loss, Constraint, against_wall, align_with, point_towards, distance_constraint
 import re
 from scipy.optimize import NonlinearConstraint
+from .device_utils import get_device_with_index, to_device
 
 
-def isfloat(value):
-    try:
-        float(value)
-        return True
-    except ValueError:
-        return False
-
-
-def generate_grid_points(boundary, grid_size=1):
-    x_values = [point[0] for point in boundary]
-    y_values = [point[1] for point in boundary]
-    
-    x_min = min(x_values)
-    x_max = max(x_values)
-    y_min = min(y_values)
-    y_max = max(y_values)
-    
-    x_grid_points = np.arange(x_min, x_max + grid_size, grid_size)
-    y_grid_points = np.arange(y_min, y_max + grid_size, grid_size)
-    
-    grid_dict = {}
-    for i, x in enumerate(x_grid_points):
-        for j, y in enumerate(y_grid_points):
-            grid_dict[(i,j)] = [x, y]
-    
-    return grid_dict
-    
-def expand_for_loops(script):
-    lines = iter(script.strip().split('\n'))  # Convert list of lines to an iterator
-    expanded_lines = []
-
-    for line in lines:
-        line = line.strip()
-
-        # Detect and handle for loops
-        if line.startswith("for "):
-            match = re.match(r"for\s+\w+\s+in\s+range\((\d+),\s*(\d+)\):", line)
-            if match:
-                start = int(match.group(1))
-                end = int(match.group(2))
-                body_line = next(lines).strip()  # Get the next line, which should be the loop body
-
-                for i in range(start, end):
-                    # Preserve the entire line, replacing [i] with the current loop index
-                    expanded_line = body_line.replace("[i]", f"[{i}]")
-                    expanded_lines.append(expanded_line)
-        else:
-            expanded_lines.append(line)
-
-    return '\n'.join(expanded_lines)
 
 class GradSolver:
     def __init__(self, boundary, solver_type="default"):
@@ -77,7 +28,10 @@ class GradSolver:
 
         Note: boudaries should be given in counterclockwise order
         """
-        self.device = "cuda:0"
+        self.device = get_device_with_index()
+        # Ensure device is available
+        if self.device.startswith('cuda') and not torch.cuda.is_available():
+            self.device = 'cpu'
         self.boundary = boundary
         self.solver_type = solver_type
         self.on_top_of_assets = []
@@ -85,8 +39,6 @@ class GradSolver:
     def is_fixture(self, instance_id):
         return instance_id.startswith('walls') or instance_id.startswith('fixed_point') or instance_id == "room_0"
 
-    def overlaps(self, object_interest):
-        pass
 
     def project_back_to_polygon(self, existing_constraints):
         MAX_ATTEMPTS = 3

@@ -52,57 +52,6 @@ def point_to_segment_batch_loss(points, segments):
     distance = (closest_x - px) ** 2 + (closest_y - py) ** 2
     return distance
 
-def periodic_sin_loss(vector1, vector2):
-    """
-    Calculate the custom loss based on the cosine similarity, which is zero
-    at 90 and  270 degrees and increases otherwise.
-
-    Args:
-        vector1 (torch.Tensor): First vector tensor.
-        vector2 (torch.Tensor): Second vector tensor.
-
-    Returns:
-        torch.Tensor: The computed loss.
-    """
-    # Normalize the vectors
-    vector1_norm = F.normalize(vector1, p=2, dim=-1)
-    vector2_norm = F.normalize(vector2, p=2, dim=-1)
-    
-    # Calculate the cosine similarity
-    cosine_similarity = torch.sum(vector1_norm * vector2_norm, dim=-1).clamp(-1 + 1e-7, 1 - 1e-7)
-    
-    # Convert cosine similarity to radians
-    angles = torch.acos(cosine_similarity)
-    
-    # Compute the periodic loss
-    #loss = torch.cos(angles)**2
-    loss = abs(torch.sin(angles))
-    
-    return loss.mean()
-
-def periodic_loss(vector1, vector2, epsilon=1e-7):
-    """
-    Calculate the custom loss based on the cosine similarity, which is zero
-    at 0, 90, 180, and 270 degrees and increases otherwise.
-
-    Args:
-        vector1 (torch.Tensor): First vector tensor.
-        vector2 (torch.Tensor): Second vector tensor.
-
-    Returns:
-        torch.Tensor: The computed loss.
-    """
-    # Normalize the vectors
-    vector1_norm = F.normalize(vector1, p=2, dim=-1)
-    vector2_norm = F.normalize(vector2, p=2, dim=-1)
-    # Calculate cosine similarity, add clamping for numerical stability
-    cosine_similarity = torch.sum(vector1_norm * vector2_norm, dim=-1).clamp(-1 + epsilon, 1 - epsilon)
-    # Compute the angle in radians
-    cos_2theta = 2 * cosine_similarity**2 - 1
-    # Use cos(2 * angle) to create periodic loss zero at 0, 90, 180, and 270 degrees
-    loss = 1 - cos_2theta**2
-    # Return the mean loss
-    return loss.mean()
 
 def cosine_distance_loss(vector1, vector2, epsilon=1e-5, beta=10):
     """
@@ -129,11 +78,6 @@ def cosine_distance_loss(vector1, vector2, epsilon=1e-5, beta=10):
     # Convert cosine similarity to cosine distance (1 - cosine similarity)
     #return (-cosine_similarity).mean()
 
-def angle_between(v1, v2):
-    unit_v1 = v1 / torch.norm(v1)
-    unit_v2 = v2 / torch.norm(v2)
-    dot_product = torch.dot(unit_v1, unit_v2)
-    return torch.acos(dot_product)
 
 
 # def distance_loss(coord1, coord2, min_distance=1.0, max_distance=3.0):
@@ -194,50 +138,6 @@ def distance_loss(coord1, coord2, min_distance=1.0, max_distance=3.0):
     return loss
 
 
-def does_intersect(asset1, asset2):
-    poly1 = asset1.get_polygon()
-    poly2 = asset2.get_polygon()
-    
-    def get_edges(polygon):
-        return [(polygon[i], polygon[(i + 1) % len(polygon)]) for i in range(len(polygon))]
-    
-    def project(polygon, axis):
-        dots = torch.matmul(polygon, axis)
-        return torch.min(dots), torch.max(dots)
-
-    def sigmoid_approx(x, k=10):
-        return torch.sigmoid(k * x)
-    
-    def overlap(min1, max1, min2, max2):
-        # Use sigmoid to approximate the step function for differentiability
-        return sigmoid_approx(max2 - min1) * sigmoid_approx(max1 - min2)
-    
-    def get_normals(edges):
-        return [torch.tensor([-(edge[1][1] - edge[0][1]), edge[1][0] - edge[0][0]]) for edge in edges]
-    
-    edges1 = get_edges(poly1)
-    edges2 = get_edges(poly2)
-    
-    axes = get_normals(edges1) + get_normals(edges2)
-    
-    #return torch.sum(poly1) + (asset1.position[0] <= 1)
-    #return torch.sum(axes)
-    intersection_score = 1.0  # Start with full overlap (score of 1)
-    for axis in axes:
-        min1, max1 = project(poly1, axis)
-        min2, max2 = project(poly2, axis)
-        #import pdb;pdb.set_trace()
-        intersection_score *= overlap(min1, max1, min2, max2)
-
-    # Loss should be 0 if there is no intersection and positive otherwise
-    #return 1 - intersection_score  # Loss should be 0 if there is no intersection and positive otherwise
-    #return intersection_score  # Loss should be 0 if there is no intersection and positive otherwise
-
-    #target_distance = 6.
-    #distance = torch.sqrt(torch.sum((asset1.position - asset2.position) ** 2))
-    # Calculate the mean squared error between the distance and the target distance
-    #loss = F.mse_loss(distance, torch.tensor(target_distance))
-    return F.mse_loss(asset1.rotation, asset2.rotation + np.pi/2)
 
 
 def is_point_on_line_segment(point, line_start, line_end):

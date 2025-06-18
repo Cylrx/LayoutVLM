@@ -1,10 +1,8 @@
 import random
 import torch
-import copy
 import re
 import numpy as np
 import os
-import ast
 from typing import Any
 from .grad_solver import GradSolver
 from .constraints import Constraint
@@ -14,12 +12,9 @@ from .constraints import point_towards
 from .constraints import against_wall
 from utils.placement_utils import get_random_placement
 from .scene import AssetInstance, Wall
+from .device_utils import get_device_with_index, to_device
 
 
-def get_vi_from_instance_id(instance_id):
-    asset_var_name = "_".join(instance_id.split("_")[:-1])
-    instance_idx = int(instance_id.split("_")[-1])
-    return asset_var_name, instance_idx
 
 
 class SandBoxEnv:

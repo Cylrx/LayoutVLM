@@ -11,6 +11,7 @@ from .constraints import ALL_CONSTRAINTS
 import re 
 from collections import defaultdict
 from .constraints import Constraint
+from .device_utils import get_device_with_index, to_device
 
 
 def parse_constraint(constraint):
@@ -109,9 +110,12 @@ def generate_loops(constraints):
        
 
 class Wall:
-    def __init__(self, wall_id, vertices, device="cuda:0"):
+    def __init__(self, wall_id, vertices, device=None):
         self.id = wall_id
-        self.device = device
+        self.device = get_device_with_index() if device is None else device
+        # Ensure device is available
+        if self.device.startswith('cuda') and not torch.cuda.is_available():
+            self.device = 'cpu'
         self.corner1 = vertices[0]
         self.corner2 = vertices[1]
         self.optimize = 0
@@ -147,11 +151,14 @@ class Wall:
 
 
 class AssetInstance:
-    def __init__(self, id, position, rotation, size, onCeiling=False, optimize=1, device="cuda:0"):
+    def __init__(self, id, position, rotation, size, onCeiling=False, optimize=1, device=None):
         self.id = id
         self.size = size
         self.onCeiling = onCeiling
-        self.device = device
+        self.device = get_device_with_index() if device is None else device
+        # Ensure device is available
+        if self.device.startswith('cuda') and not torch.cuda.is_available():
+            self.device = 'cpu'
         self.optimize = optimize
         if len(position) == 2:
             position = [position[0], position[1], 0]
@@ -246,39 +253,6 @@ class Scene:
                 )
             )
 
-    def refine_boundary(self):
-        assert False
-        #for idx, asset in enumerate(self.assets):
-        #    try:
-        #        center_x, center_y, center_z = asset.position.cpu().detach().numpy()
-        #        rotation = asset.rotation.cpu().detach().item()
-        #        rotated_corners = asset.get_2dpolygon().cpu().detach().numpy()
-
-
-        #        # create a polygon for the solution
-        #        obj_poly = Polygon(rotated_corners)
-        #        x, y = obj_poly.exterior.xy
-        #        min_z, min_x, max_z, max_x = obj_poly.bounds
-
-        #        boundary = [[min_z_f, min_x_f, min_y_f], 
-        #        [max_z_f, min_x_f, min_y_f], 
-        #        [max_z_f, max_x_f, min_y_f], 
-        #        [min_z_f, max_x_f, min_y_f]] = self.boundary
-
-        #        min_x_f = min(min_x_f, min_x)
-        #        min_z_f = min(min_z_f, min_z)
-        #        max_x_f = max(max_x_f, max_x)
-        #        max_z_f = max(max_z_f, max_z)
-        #        max_y_f = 0
-
-        #        # Assuming the floor's boundary is in the form of a 3D box with a fixed z-axis
-        #        self.boundary = [[min_z_f, min_x_f, min_y_f], 
-        #        [max_z_f, min_x_f, min_y_f], 
-        #        [max_z_f, max_x_f, min_y_f], 
-        #        [min_z_f, max_x_f, min_y_f]]
-        #    except Exception as e:
-        #        print(f"Skipping polygon due to error: {e}")
-        #        continue
 
     def extract_constraints(self, dump_path=None, debug=True):
         # point_towards
@@ -302,6 +276,7 @@ class Scene:
                 for j in range(num_assets):
                     asset = self.assets[j]
                     constraint = ALL_CONSTRAINTS["against_wall"]
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
                     constraint_value = constraint.evaluate([asset, wall_asset], device=device).item()
                     if debug:
                         print("Wall constraint value between asset {} and wall {}: {}".format(asset.id, wall_asset.id, constraint_value))

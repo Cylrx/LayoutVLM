@@ -14,12 +14,10 @@ from typing import List, Dict, Literal, Optional
 from utils.plot_utils import load_image, overlay_bounding_box
 import base64
 import collections
-import cv2
 from utils.placement_utils import get_random_placement
 from prompts.layoutvlm import base_prompt
 from utils.blender_render import render_existing_scene
 from utils.blender_utils import reset_blender
-import shutil
 from collections import OrderedDict
 import prompts.layoutvlm.short_prompt as short_prompt
 import imageio
@@ -63,12 +61,6 @@ class LayoutVLM:
         self.max_place_remaining_retry = max_place_remaining_retry
         
 
-    def print_local_vars(self):
-        print("==============================")
-        print("Current state of local variables:")
-        for var, value in self.local_vars.items():
-            print(f"{var}: {value}")
-        print("==============================")
 
     @staticmethod
     def encode_image(image_path):

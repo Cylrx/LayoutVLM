@@ -3,6 +3,21 @@ import torch
 from .constraint_utils import *
 import numpy as np
 from shapely.geometry import Polygon
+from .device_utils import get_device_with_index, to_device
+import warnings
+
+# Try to import oriented_iou_loss, fallback if CUDA not available
+try:
+    from third_party.Rotated_IoU import oriented_iou_loss
+    ORIENTED_IOU_AVAILABLE = True
+except ImportError as e:
+    ORIENTED_IOU_AVAILABLE = False
+    warnings.warn(
+        "WARNING: Could not import oriented_iou_loss from third_party.Rotated_IoU. "
+        "This is likely due to CUDA not being available or the CUDA extension not being compiled. "
+        "The bbox_overlap_loss function will use a simplified fallback that may be less accurate. "
+        f"Original error: {e}"
+    )
 
 
 class Constraint:
@@ -12,7 +27,12 @@ class Constraint:
         self.description = description.format(**params)
         self.params = params
     
-    def evaluate(self, assets: list, device="cuda:0"):
+    def evaluate(self, assets: list, device=None):
+        if device is None:
+            device = get_device_with_index()
+        # Ensure device is available
+        if device.startswith('cuda') and not torch.cuda.is_available():
+            device = 'cpu'
         return self.constraint_func(assets, **self.params, device=device)
 
 def get_bounding_box(obj):
@@ -28,7 +48,87 @@ def get_center_position(obj):
     return center_x, center_y, center_z
 
 
-def bbox_overlap_loss(assets: list, skipped_asset_pairs: list=[], only_consider_overlapping_assets=False, detach_asset2=False, consider_z_axis=True, epsilon=1e-5, device="cuda:0"):
+def _cpu_fallback_giou(corners1, corners2, area1, area2, device):
+    """
+    CPU-only fallback for GIoU calculation using Shapely for polygon intersection.
+    This is less accurate than the CUDA implementation but allows the code to run without CUDA.
+    
+    Args:
+        corners1: (B, N, 4, 2) tensor of polygon corners
+        corners2: (B, N, 4, 2) tensor of polygon corners  
+        area1: (B, N) tensor of areas
+        area2: (B, N) tensor of areas
+        device: target device
+    
+    Returns:
+        giou_loss: (N,) tensor
+        iou: (N,) tensor
+    """
+    B, N = corners1.shape[0], corners1.shape[1]
+    
+    giou_losses = []
+    ious = []
+    
+    for i in range(N):
+        try:
+            # Convert to numpy for Shapely
+            poly1_corners = corners1[0, i].detach().cpu().numpy()
+            poly2_corners = corners2[0, i].detach().cpu().numpy()
+            
+            # Create Shapely polygons
+            poly1 = Polygon(poly1_corners)
+            poly2 = Polygon(poly2_corners)
+            
+            # Ensure polygons are valid
+            if not poly1.is_valid:
+                poly1 = poly1.buffer(0)
+            if not poly2.is_valid:
+                poly2 = poly2.buffer(0)
+            
+            # Calculate intersection
+            intersection = poly1.intersection(poly2)
+            intersection_area = intersection.area if hasattr(intersection, 'area') else 0.0
+            
+            # Calculate union
+            union_area = poly1.area + poly2.area - intersection_area
+            
+            # Calculate IoU
+            iou_val = intersection_area / union_area if union_area > 0 else 0.0
+            
+            # Calculate enclosing box (axis-aligned bounding box of both polygons)
+            combined_coords = np.vstack([poly1_corners, poly2_corners])
+            min_x, min_y = combined_coords.min(axis=0)
+            max_x, max_y = combined_coords.max(axis=0)
+            enclosing_area = (max_x - min_x) * (max_y - min_y)
+            
+            # Calculate GIoU
+            giou_val = iou_val - (enclosing_area - union_area) / enclosing_area if enclosing_area > 0 else iou_val
+            
+            # Convert to loss (1 - GIoU)
+            giou_loss_val = 1.0 - giou_val
+            
+        except Exception as e:
+            # If Shapely fails, use zero values
+            warnings.warn(f"Shapely polygon calculation failed: {e}. Using zero values.")
+            giou_loss_val = 0.0
+            iou_val = 0.0
+        
+        giou_losses.append(giou_loss_val)
+        ious.append(iou_val)
+    
+    # Convert to tensors
+    giou_loss = torch.tensor(giou_losses, dtype=torch.float32, requires_grad=True, device=device)
+    iou = torch.tensor(ious, dtype=torch.float32, requires_grad=True, device=device)
+    
+    return giou_loss, iou
+
+
+def bbox_overlap_loss(assets: list, skipped_asset_pairs: list=[], only_consider_overlapping_assets=False, detach_asset2=False, consider_z_axis=True, epsilon=1e-5, device=None):
+    if device is None:
+        device = get_device_with_index()
+    # Ensure device is available
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        device = 'cpu'
     """
     This function calculates the loss for the 3D bounding boxes of the assets to not overlap
     """
@@ -104,16 +204,34 @@ def bbox_overlap_loss(assets: list, skipped_asset_pairs: list=[], only_consider_
 
     if len(corners1) == 0:
         return torch.tensor(0.0, requires_grad=False), torch.tensor(0.0, requires_grad=False)
+    
     corners1 = torch.stack(corners1, dim=0).unsqueeze(0)
     corners2 = torch.stack(corners2, dim=0).unsqueeze(0)
     area1 = torch.tensor(area1, dtype=torch.float32, requires_grad=False).unsqueeze(0)
     area2 = torch.tensor(area2, dtype=torch.float32, requires_grad=False).unsqueeze(0)
 
-    from third_party.Rotated_IoU import oriented_iou_loss
-    giou_loss, iou = oriented_iou_loss.cal_my_giou(
-        corners1.to(device), corners2.to(device).detach(),
-        area1.to(device), area2.to(device).detach()
-    )
+    if ORIENTED_IOU_AVAILABLE:
+        # Use the oriented IoU loss if available
+        try:
+            # Check if cal_my_giou exists, otherwise use cal_giou
+            if hasattr(oriented_iou_loss, 'cal_my_giou'):
+                giou_loss, iou = oriented_iou_loss.cal_my_giou(
+                    corners1.to(device), corners2.to(device).detach(),
+                    area1.to(device), area2.to(device).detach()
+                )
+            else:
+                # Fallback to cal_giou if cal_my_giou doesn't exist
+                # Convert corners to box format (x, y, w, h, angle) if needed
+                warnings.warn("cal_my_giou not found, using simplified fallback calculation")
+                giou_loss, iou = _cpu_fallback_giou(corners1, corners2, area1, area2, device)
+        except Exception as e:
+            warnings.warn(f"Error using oriented_iou_loss: {e}. Using simplified fallback.")
+            giou_loss, iou = _cpu_fallback_giou(corners1, corners2, area1, area2, device)
+    else:
+        # Fallback: use a simplified overlap calculation
+        print("WARNING: No CUDA device available, skipping important oriented IoU loss function. "
+              "Results may be less accurate.")
+        giou_loss, iou = _cpu_fallback_giou(corners1, corners2, area1, area2, device)
 
     if consider_z_axis:
         overlap_coefs = torch.tensor(overlap_coefs, dtype=torch.float32, requires_grad=False).unsqueeze(0).to(device)
@@ -126,14 +244,24 @@ def bbox_overlap_loss(assets: list, skipped_asset_pairs: list=[], only_consider_
 ################################
 ### distance-based
 ################################
-def distance_constraint(assets: list, min_distance, max_distance, weight=1., device="cuda:0"):
+def distance_constraint(assets: list, min_distance, max_distance, weight=1., device=None):
+    if device is None:
+        device = get_device_with_index()
+    # Ensure device is available
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        device = 'cpu'
     assert len(assets) == 2
     coord1 = assets[0].position[:2].to(device)
     coord2 = assets[1].position[:2].to(device).detach()
     loss = distance_loss(coord1, coord2, min_distance=min_distance, max_distance=max_distance)
     return weight * torch.clamp(loss, max=1)
 
-def distance_constraint_deterministic(assets: list, min_distance, max_distance, weight=1., device="cuda:0"):
+def distance_constraint_deterministic(assets: list, min_distance, max_distance, weight=1., device=None):
+    if device is None:
+        device = get_device_with_index()
+    # Ensure device is available
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        device = 'cpu'
     assert len(assets) == 2
     distance = torch.linalg.norm(assets[0].position[:2] - assets[1].position[:2])
     if min_distance < distance < max_distance:
@@ -144,7 +272,12 @@ def distance_constraint_deterministic(assets: list, min_distance, max_distance, 
 ################################
 ### top-bottom based
 ################################
-def on_top_of_deterministic(assets: list, device="cuda:0"):
+def on_top_of_deterministic(assets: list, device=None):
+    if device is None:
+        device = get_device_with_index()
+    # Ensure device is available
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        device = 'cpu'
     assert len(assets) == 2
     min_x1, max_x1, min_y1, max_y1, min_z1, max_z1 = get_bounding_box(assets[0])
     min_x2, max_x2, min_y2, max_y2, min_z2, max_z2 = get_bounding_box(assets[1])
@@ -156,10 +289,15 @@ def on_top_of_deterministic(assets: list, device="cuda:0"):
     if vertical_loss < 0.1:
         return torch.tensor(10)
     else:
-        _, iou = bbox_overlap_loss(assets, detach_asset2=True, consider_z_axis=False)
+        _, iou = bbox_overlap_loss(assets, detach_asset2=True, consider_z_axis=False, device=device)
         return -10 * iou
 
-def on_top_of(assets: list, device="cuda:0"):
+def on_top_of(assets: list, device=None):
+    if device is None:
+        device = get_device_with_index()
+    # Ensure device is available
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        device = 'cpu'
     assert len(assets) == 2
     _, iou = bbox_overlap_loss(assets, detach_asset2=True, consider_z_axis=False, device=device)
     return torch.clamp(-10 * iou, min=-10, max=10)
@@ -167,7 +305,12 @@ def on_top_of(assets: list, device="cuda:0"):
 ################################
 ### orientation-based
 ################################
-def point_towards(assets: list, angle=0, device="cuda:0"):
+def point_towards(assets: list, angle=0, device=None):
+    if device is None:
+        device = get_device_with_index()
+    # Ensure device is available
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        device = 'cpu'
     assert len(assets) == 2
     asset1, asset2 = assets
     vector1 = asset1.get_2dvector(add_radian=-math.radians(angle)).to(device)
@@ -186,7 +329,12 @@ def point_towards(assets: list, angle=0, device="cuda:0"):
         vector2 = (asset2.position[:2] - asset1.position[:2]).to(device).detach()
         return cosine_distance_loss(vector1, vector2)
 
-def align_with(assets: list, angle=0, device="cuda:0"):
+def align_with(assets: list, angle=0, device=None):
+    if device is None:
+        device = get_device_with_index()
+    # Ensure device is available
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        device = 'cpu'
     assert len(assets) == 2
     asset1, asset2 = assets
     vector1 = asset1.get_2dvector(add_radian=-math.radians(angle)).to(device)
@@ -196,7 +344,12 @@ def align_with(assets: list, angle=0, device="cuda:0"):
 ################################
 ### others
 ################################
-def against_wall(assets: list, device="cuda:0"):
+def against_wall(assets: list, device=None):
+    if device is None:
+        device = get_device_with_index()
+    # Ensure device is available
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        device = 'cpu'
     assert len(assets) == 2
     asset, wall= assets
     vector = asset.get_2dvector(add_radian=-math.radians(90)).to(device)
@@ -258,12 +411,19 @@ ALL_CONSTRAINTS = {
         min_distance=0,
         max_distance=1
     ),
+    "moderate_distance": Constraint(
+        constraint_name="moderate_distance",
+        constraint_func=distance_constraint,
+        description="",
+        min_distance=1,
+        max_distance=3
+    ),
     "moderate_distance_deterministic": Constraint(
-     constraint_name="moderate_distance",
-     constraint_func=distance_constraint_deterministic,
-     description="",
-     min_distance=1,
-     max_distance=3
+        constraint_name="moderate_distance",
+        constraint_func=distance_constraint_deterministic,
+        description="",
+        min_distance=1,
+        max_distance=3
     ),
     "point_towards": Constraint(
         constraint_name="point_towards",
@@ -289,19 +449,5 @@ ALL_CONSTRAINTS = {
         constraint_name="align_with",
         constraint_func=align_with,
         description="the first object should be aligned with the second object both in orientation and distance",
-    ),
-    "close_to_deterministic": Constraint(
-        constraint_name="close_to",
-        constraint_func=distance_constraint_deterministic,
-        description="",
-        min_distance=0,
-        max_distance=1
-    ),
-    "moderate_distance_deterministic": Constraint(
-     constraint_name="moderate_distance",
-     constraint_func=distance_constraint_deterministic,
-     description="",
-     min_distance=1,
-     max_distance=3
     ),
 }
