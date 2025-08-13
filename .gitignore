@@ -1,2 +1,6 @@
 __pycache__
 ./results/*
+assets
+benchmark_tasks
+results
+assets.zip

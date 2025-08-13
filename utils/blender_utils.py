@@ -470,7 +470,7 @@ def get_pixel_coordinates(scene, camera, world_coord):
 
 def set_rendering_settings(panorama=False, high_res=False) -> None:
     render = bpy.context.scene.render
-    render.engine = 'BLENDER_EEVEE'
+    render.engine = 'BLENDER_EEVEE_NEXT'
     render.image_settings.file_format = "PNG"
     render.image_settings.color_mode = "RGBA"
 

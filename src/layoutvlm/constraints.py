@@ -147,6 +147,17 @@ def bbox_overlap_loss(assets: list, skipped_asset_pairs: list=[], only_consider_
     corners2 = []
     area1 = []
     area2 = []
+    # For oriented IoU (cal_giou), build boxes (x, y, w, h, alpha)
+    boxes1 = []
+    boxes2 = []
+
+    def _asset_to_box(asset):
+        x = asset.position[0]
+        y = asset.position[1]
+        w = asset.dimensions[0]
+        h = asset.dimensions[1]
+        alpha = torch.atan2(asset.rotation[1], asset.rotation[0])
+        return torch.stack([x, y, w, h, alpha])
     for i in range(num_assets):
         asset_i = assets[i]
         area_i = asset_i.size[0] * asset_i.size[1]
@@ -181,6 +192,8 @@ def bbox_overlap_loss(assets: list, skipped_asset_pairs: list=[], only_consider_
                 corners2.append(asset_j.get_2dpolygon())
                 area1.append(area_i)
                 area2.append(area_j)
+                boxes1.append(_asset_to_box(asset_i))
+                boxes2.append(_asset_to_box(asset_j))
             else:
                 if abs(area_i - area_j) < epsilon:
                     corners1.append(asset_i.get_2dpolygon())
@@ -195,12 +208,19 @@ def bbox_overlap_loss(assets: list, skipped_asset_pairs: list=[], only_consider_
 
                     if consider_z_axis:
                         overlap_coefs.append(overlap_coef)
+                    # symmetric pairing for boxes as well
+                    boxes1.append(_asset_to_box(asset_i))
+                    boxes2.append(_asset_to_box(asset_j))
+                    boxes1.append(_asset_to_box(asset_j))
+                    boxes2.append(_asset_to_box(asset_i))
                 else:
                     small_asset, bigger_asset = (asset_i, asset_j) if area_i < area_j else (asset_j, asset_i)
                     corners1.append(small_asset.get_2dpolygon())
                     corners2.append(bigger_asset.get_2dpolygon())
                     area1.append(min(area_i, area_j))
                     area2.append(max(area_i, area_j))
+                    boxes1.append(_asset_to_box(small_asset))
+                    boxes2.append(_asset_to_box(bigger_asset))
 
     if len(corners1) == 0:
         return torch.tensor(0.0, requires_grad=False), torch.tensor(0.0, requires_grad=False)
@@ -209,21 +229,17 @@ def bbox_overlap_loss(assets: list, skipped_asset_pairs: list=[], only_consider_
     corners2 = torch.stack(corners2, dim=0).unsqueeze(0)
     area1 = torch.tensor(area1, dtype=torch.float32, requires_grad=False).unsqueeze(0)
     area2 = torch.tensor(area2, dtype=torch.float32, requires_grad=False).unsqueeze(0)
+    # Prepare box tensors for oriented IoU loss
+    box1_tensor = torch.stack(boxes1, dim=0).unsqueeze(0)
+    box2_tensor = torch.stack(boxes2, dim=0).unsqueeze(0)
 
     if ORIENTED_IOU_AVAILABLE:
         # Use the oriented IoU loss if available
         try:
-            # Check if cal_my_giou exists, otherwise use cal_giou
-            if hasattr(oriented_iou_loss, 'cal_my_giou'):
-                giou_loss, iou = oriented_iou_loss.cal_my_giou(
-                    corners1.to(device), corners2.to(device).detach(),
-                    area1.to(device), area2.to(device).detach()
-                )
-            else:
-                # Fallback to cal_giou if cal_my_giou doesn't exist
-                # Convert corners to box format (x, y, w, h, angle) if needed
-                warnings.warn("cal_my_giou not found, using simplified fallback calculation")
-                giou_loss, iou = _cpu_fallback_giou(corners1, corners2, area1, area2, device)
+            # Prefer cal_giou with (x, y, w, h, alpha) boxes
+            giou_loss, iou = oriented_iou_loss.cal_giou(
+                box1_tensor.to(device), box2_tensor.to(device).detach()
+            )
         except Exception as e:
             warnings.warn(f"Error using oriented_iou_loss: {e}. Using simplified fallback.")
             giou_loss, iou = _cpu_fallback_giou(corners1, corners2, area1, area2, device)
