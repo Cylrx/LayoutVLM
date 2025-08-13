@@ -3,6 +3,8 @@ import json
 import argparse
 import numpy as np
 import collections
+import random
+import torch
 from src.layoutvlm.scene import Scene
 from src.layoutvlm.layoutvlm import LayoutVLM
 from utils.placement_utils import get_random_placement
@@ -93,6 +95,11 @@ def main():
     args = parse_args()
     if args.openai_api_key:
         os.environ["OPENAI_API_KEY"] = args.openai_api_key
+    
+    # reproducibility
+    random.seed(6)
+    np.random.seed(6)
+    torch.manual_seed(6)
     
     # Create save directory
     os.makedirs(args.save_dir, exist_ok=True)
