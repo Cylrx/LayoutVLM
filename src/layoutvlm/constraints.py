@@ -330,20 +330,38 @@ def point_towards(assets: list, angle=0, device=None):
     assert len(assets) == 2
     asset1, asset2 = assets
     vector1 = asset1.get_2dvector(add_radian=-math.radians(angle)).to(device)
-    corners2 = asset2.get_2dpolygon().to(device)
 
-    with torch.no_grad():
-        intersects = ray_intersects_polygon(
-            origin=asset1.position[:2].detach().cpu().numpy(),
-            direction=vector1.detach().cpu().numpy(),
-            polygon=corners2.detach().cpu().numpy()
-        )
+    # If the second asset exposes polygon corners, use polygon-based check (original behavior).
+    if hasattr(asset2, "get_2dpolygon"):
+        corners2 = asset2.get_2dpolygon().to(device)
+        with torch.no_grad():
+            intersects = ray_intersects_polygon(
+                origin=asset1.position[:2].detach().cpu().numpy(),
+                direction=vector1.detach().cpu().numpy(),
+                polygon=corners2.detach().cpu().numpy()
+            )
+        if intersects:
+            return torch.tensor(0.0, requires_grad=True, device=device)
+        else:
+            vector2 = (asset2.position[:2] - asset1.position[:2]).to(device).detach()
+            return cosine_distance_loss(vector1, vector2)
 
-    if intersects:
-        return torch.tensor(0.0, requires_grad=True, device=device)
-    else:
-        vector2 = (asset2.position[:2] - asset1.position[:2]).to(device).detach()
+    # Fallback: handle non-polygon targets (e.g., Wall). Point towards the closest point on the segment.
+    if hasattr(asset2, "corner1") and hasattr(asset2, "corner2"):
+        p = asset1.position[:2].to(device)
+        a = torch.tensor(asset2.corner1[:2], dtype=torch.float32, device=device)
+        b = torch.tensor(asset2.corner2[:2], dtype=torch.float32, device=device)
+        ab = b - a
+        ap = p - a
+        denom = torch.dot(ab, ab) + 1e-8
+        t = torch.dot(ap, ab) / denom
+        t = torch.clamp(t, 0.0, 1.0)
+        closest = a + t * ab
+        vector2 = (closest - p).detach()
         return cosine_distance_loss(vector1, vector2)
+
+    # If neither polygon nor segment info is available, return zero to avoid crashing.
+    return torch.tensor(0.0, requires_grad=True, device=device)
 
 def align_with(assets: list, angle=0, device=None):
     if device is None:
