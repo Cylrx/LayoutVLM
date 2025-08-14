@@ -1,6 +1,8 @@
 __pycache__
 ./results/*
+*.ipynb
 assets
 benchmark_tasks
+benchmark_results
 results
 assets.zip
